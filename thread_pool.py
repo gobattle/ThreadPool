@@ -1,127 +1,119 @@
 import threading
 import Queue
 import time
-import sys
+import json
 
 
 class ThreadPoolTask(threading.Thread):
     LIFE_SPAN = 30  # in second
 
-    def __init__(self, queue, stop_event):
+    def __init__(self, task_queue, task_set):
         threading.Thread.__init__(self)
-        self.kill = False
-        self.queue = queue
-        self.stop_event = stop_event
+        self.task_queue = task_queue
+        self.task_set = task_set
         self._is_running = False
+        self._is_alive = True
         self._wait_to_kill = False
         self.born_at = time.time()
 
     def run(self):
-        while self.is_alive:
-            self.isRunning = False
+        while self.check_alive():
+            self.is_running = False
             try:
-                callback, args = self.queue.get(timeout=0.1)
-                self.isRunning = True
+                callback, args_json = self.task_queue.get(timeout=0.1)
+                args = json.loads(args_json)
+                self.is_running = True
                 try:
                     callback(*args)
                 except Exception, e:
-                    print >> sys.stderr, "ThreadPoolTask :", e
-            except:
+                    #TODO track exception
+                    print  e
+                self.task_set.remove((callback, args_json))
+            except Exception, e:
                 pass
             # will be kill when queue is empty
-            if self._waitToKill and not self.isRunning:
-                self.kill = True
+            if self._wait_to_kill and not self.is_running:
+                self._is_alive = False
 
     def stop(self):
-        self.kill = True
+        self._is_alive = False
 
-    def waitAndStop(self):
-        self._waitToKill = True
-
-    def isKilled(self):
-        return self.kill
-
-    @property
     def is_alive(self):
-        self.kill = self.kill or time.time() - self.born_at > self.LIFE_SPAN
-        return self.kill
+        return self._is_alive
+
+    def check_alive(self):
+        self._is_alive = self.is_alive() \
+            and time.time() - self.born_at < self.LIFE_SPAN
+        return self._is_alive
+
+    def wait_and_stop(self):
+        self._wait_to_kill = True
 
 
 class ThreadPool:
+    MAX_POOL_SIZE = 256
+    MAX_LOAD = 4
 
     def __init__(self, pool_size):
         self.pool_size = pool_size
         self.thread_list = []
-        self.queue = Queue.Queue(pool_size)
-        self.action_lock = threading.Lock()
+        self.task_queue = Queue.Queue(self.MAX_POOL_SIZE * self.MAX_LOAD)
+        self.task_set = set()
         self._initThreads()
 
     def _initThreads(self):
-        self.action_lock.acquire()
         for i in range(0, self.pool_size):
-            thr = ThreadPoolTask(self.queue, "Thread " + str(i))
+            thr = ThreadPoolTask(self.task_queue, self.task_set)
             self.thread_list.append(thr)
         for thr in self.thread_list:
             thr.start()
-        self.action_lock.release()
 
     def _removeDeadThreads(self):
         for thr in self.thread_list:
-            if thr.isKilled():
+            if not thr.is_alive():
                 self.thread_list.remove(thr)
                 del thr
 
     def delThreads(self, num):
-        try:
-            self.action_lock.acquire()
-            if self.thread_list == []:
-                return
-            for thr in self.thread_list:
-                if num > 0:
-                    thr.stop()
-                    num -= 1
-            self._removeDeadThreads()
-        finally:
-            self.action_lock.release()
+        if self.thread_list == []:
+            return
+        for thr in self.thread_list:
+            if num > 0:
+                thr.stop()
+                num -= 1
+        self._removeDeadThreads()
 
     def addThreads(self, num):
-        try:
-            self.action_lock.acquire()
-            self._removeDeadThreads()
-            for cpt in range(num):
-                thr = ThreadPoolTask(self.queue, "new Thread " + str(cpt))
-                thr.start()
-                self.thread_list.append(thr)
-        except:
-            pass
-        finally:
-            self.action_lock.release()
+        self._removeDeadThreads()
+        for cpt in range(num):
+            thr = ThreadPoolTask(self.queue, "new Thread " + str(cpt))
+            thr.start()
+            self.thread_list.append(thr)
 
-    def stopAll(self):
+    def stop_all(self):
         for thr in self.thread_list:
-            thr.stop()
+            thr._is_alive = False
 
-    def waitAndStopAll(self):
+    def wait_and_stop_all(self):
         for thr in self.thread_list:
-            thr.waitAndStop()
+            thr.wait_and_stop()
 
     def joinAll(self):
         for thr in self.thread_list:
             thr.join()
 
     def countThreads(self):
-        try:
-            self.action_lock.acquire()
-            return len(self.thread_list)
-        finally:
-            self.action_lock.release()
+        return len(self.thread_list)
 
     def addTask(self, callback, args):
-        try:
-            self.action_lock.acquire()
-            self._removeDeadThreads()
-            if self.thread_list == []:
-                return
-            self.queue.put((callback, args))
-        finally:
-            self.action_lock.release()
+        self._removeDeadThreads()
+        if self.thread_list == []:
+            return
+        args_json = json.dumps(args)
+        if (callback, args_json) not in self.task_set:
+            self.task_queue.put((callback, args_json))
+            self.task_set.add((callback, args_json))
+
+    @property
+    def queue_size(self):
+        return self.task_queue.qsize()
