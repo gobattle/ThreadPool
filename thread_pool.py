@@ -1,11 +1,9 @@
 import threading
 import Queue
-import time
 import json
 
 
 class ThreadWorker(threading.Thread):
-    LIFE_SPAN = 30  # in second
 
     def __init__(self, task_queue, task_set):
         threading.Thread.__init__(self)
@@ -14,10 +12,9 @@ class ThreadWorker(threading.Thread):
         self._is_running = False
         self._is_alive = True
         self._wait_to_kill = False
-        self.born_at = time.time()
 
     def run(self):
-        while self.check_alive():
+        while self._is_alive:
             self.is_running = False
             try:
                 callback, args_json = self.task_queue.get(timeout=0.1)
@@ -38,24 +35,19 @@ class ThreadWorker(threading.Thread):
     def stop(self):
         self._is_alive = False
 
-    def is_alive(self):
-        return self._is_alive
-
-    def check_alive(self):
-        self._is_alive = self.is_alive() \
-            and time.time() - self.born_at < self.LIFE_SPAN
-        return self._is_alive
-
     def wait_and_stop(self):
         self._wait_to_kill = True
+
+    def is_alive(self):
+        return self._is_alive
 
 
 class ThreadPool:
     MAX_POOL_SIZE = 256
     MAX_LOAD = 4
 
-    def __init__(self, pool_size=MAX_POOL_SIZE):
-        self.pool_size = pool_size
+    def __init__(self, pool_size=4):
+        self.pool_size = min(pool_size, self.MAX_POOL_SIZE)
         self.thread_list = []
         self.task_queue = Queue.Queue(self.MAX_POOL_SIZE * self.MAX_LOAD)
         self.task_set = set()
@@ -74,7 +66,7 @@ class ThreadPool:
                 self.thread_list.remove(thr)
                 del thr
 
-    def delThreads(self, num):
+    def del_threads(self, num):
         if self.thread_list == []:
             return
         for thr in self.thread_list:
@@ -83,20 +75,17 @@ class ThreadPool:
                 num -= 1
         self._removeDeadThreads()
 
-    def regain_threads(self):
-        missing_num = self.pool_size - self.count_threads()
-        for cpt in range(missing_num):
-            thr = ThreadWorker(self.task_queue, self.task_set)
-            thr.start()
-            self.thread_list.append(thr)
-
     def stop_all(self):
         for thr in self.thread_list:
-            thr._is_alive = False
+            thr.stop()
 
     def wait_and_stop_all(self):
         for thr in self.thread_list:
             thr.wait_and_stop()
+
+    def join_all(self):
+        for thr in self.thread_list:
+            thr.join()
 
     def count_threads(self):
         self._removeDeadThreads()
@@ -107,7 +96,6 @@ class ThreadPool:
         if (callback, args_json) not in self.task_set:
             self.task_queue.put((callback, args_json))
             self.task_set.add((callback, args_json))
-        self.regain_threads()
 
     @property
     def queue_size(self):
