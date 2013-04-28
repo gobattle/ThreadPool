@@ -4,7 +4,7 @@ import time
 import json
 
 
-class ThreadPoolTask(threading.Thread):
+class ThreadWorker(threading.Thread):
     LIFE_SPAN = 30  # in second
 
     def __init__(self, task_queue, task_set):
@@ -54,7 +54,7 @@ class ThreadPool:
     MAX_POOL_SIZE = 256
     MAX_LOAD = 4
 
-    def __init__(self, pool_size):
+    def __init__(self, pool_size=MAX_POOL_SIZE):
         self.pool_size = pool_size
         self.thread_list = []
         self.task_queue = Queue.Queue(self.MAX_POOL_SIZE * self.MAX_LOAD)
@@ -63,7 +63,7 @@ class ThreadPool:
 
     def _initThreads(self):
         for i in range(0, self.pool_size):
-            thr = ThreadPoolTask(self.task_queue, self.task_set)
+            thr = ThreadWorker(self.task_queue, self.task_set)
             self.thread_list.append(thr)
         for thr in self.thread_list:
             thr.start()
@@ -83,10 +83,10 @@ class ThreadPool:
                 num -= 1
         self._removeDeadThreads()
 
-    def addThreads(self, num):
-        self._removeDeadThreads()
-        for cpt in range(num):
-            thr = ThreadPoolTask(self.queue, "new Thread " + str(cpt))
+    def regain_threads(self):
+        missing_num = self.pool_size - self.count_threads()
+        for cpt in range(missing_num):
+            thr = ThreadWorker(self.task_queue, self.task_set)
             thr.start()
             self.thread_list.append(thr)
 
@@ -98,21 +98,16 @@ class ThreadPool:
         for thr in self.thread_list:
             thr.wait_and_stop()
 
-    def joinAll(self):
-        for thr in self.thread_list:
-            thr.join()
-
-    def countThreads(self):
+    def count_threads(self):
+        self._removeDeadThreads()
         return len(self.thread_list)
 
     def addTask(self, callback, args):
-        self._removeDeadThreads()
-        if self.thread_list == []:
-            return
         args_json = json.dumps(args)
         if (callback, args_json) not in self.task_set:
             self.task_queue.put((callback, args_json))
             self.task_set.add((callback, args_json))
+        self.regain_threads()
 
     @property
     def queue_size(self):
